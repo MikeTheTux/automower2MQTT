@@ -7,6 +7,11 @@ Receive Husqvarna Automower® events via WebSocket and mirror it to MQTT.
 
 Using WebSocket you can subscribe to events from your mower(s). Instead of polling the Automower® Connect API (REST) for changes you get notifications when the status or positions change.
 
+## Use Cases
+- Integration into House Automation
+- Logging via database, reporting via dashboard, e.g. tracking of position changes<br/>![grafik](https://github.com/user-attachments/assets/0a2a5412-94d6-483c-b6f9-2c629f6db02a)
+
+
 ## Example Config File
 ```yaml
 {
