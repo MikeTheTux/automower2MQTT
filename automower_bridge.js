@@ -2,22 +2,52 @@
 const mqtt = require('mqtt');
 const WebSocket = require('ws');
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
+
+// Load config
+const configPath = path.join(__dirname, 'automower_config.json');
+let mqttConfig = {
+    broker_url: 'mqtt://localhost:1883',
+    topic: 'automower',
+    client_id: 'mqttjs_' + Math.random().toString(16).slice(2, 10),
+    username: 'YOUR_USERNAME',
+    password: 'YOUR_PASSWORD'
+};
+let husqvarnaConfig = {
+    client_id: 'YOUR_CLIENT_ID',
+    client_secret: 'YOUR_CLIENT_SECRET'
+};
+try {
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    if (config.mqtt) {
+        mqttConfig = {
+            ...mqttConfig,
+            ...config.mqtt
+        };
+    }
+    if (config.husqvarna) {
+        husqvarnaConfig = {
+            ...husqvarnaConfig,
+            ...config.husqvarna
+        };
+    }
+} catch (e) {
+    console.warn('Could not load automower config file, using defaults:', e.message);
+}
 
 // MQTT settings
-const MQTT_BROKER_URL = 'mqtt://localhost:1883';
-const MQTT_TOPIC = 'automower'; // Replace with your desired MQTT topic
-const MQTT_PASSWORD = process.env.MQTT_PASSWORD || 'YOUR_MQTT_PASSWORD'; // Replace with your actual MQTT password
-const MQTT_USERNAME = process.env.MQTT_USERNAME || 'YOUR_MQTT_USERNAME'; // Replace with your actual MQTT username
-// MQTT client ID (optional, can be generated randomly)
-// Note: If you use the same client ID for multiple clients, they will disconnect each other
-const MQTT_CLIENT_ID = process.env.MQTT_CLIENT_ID || 'mqttjs_' + Math.random().toString(16).slice(2, 10);
+const MQTT_BROKER_URL = mqttConfig.broker_url;
+const MQTT_TOPIC = mqttConfig.topic;
+const MQTT_CLIENT_ID = mqttConfig.client_id;
+const MQTT_USERNAME = mqttConfig.username;
+const MQTT_PASSWORD = mqttConfig.password;
 
 // Husqvarna Automower Connect WebSocket endpoint
 const WEBSOCKET_URL = 'wss://ws.openapi.husqvarna.dev/v1';
-// Husqvarna API credentials (replace with your actual credentials)
-const HUSQVARNA_CLIENT_ID = process.env.HUSQVARNA_CLIENT_ID || 'YOUR_HUSQVARNA_CLIENT_ID'; // Replace with your actual Husqvarna client ID
-const HUSQVARNA_CLIENT_SECRET = process.env.HUSQVARNA_CLIENT_SECRET || 'YOUR_HUSQVARNA_CLIENT_SECRET'; // Replace with your actual Husqvarna client secret
 const HUSQVARNA_TOKEN_URL = 'https://api.authentication.husqvarnagroup.dev/v1/oauth2/token';
+const HUSQVARNA_CLIENT_ID = husqvarnaConfig.client_id;
+const HUSQVARNA_CLIENT_SECRET = husqvarnaConfig.client_secret;
 
 let accessToken = null;
 let accessTokenExpiresAt = 0;
