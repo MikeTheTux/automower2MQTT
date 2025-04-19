@@ -1,4 +1,3 @@
-//const normalizePort = require('normalize-port');
 const mqtt = require('mqtt');
 const WebSocket = require('ws');
 const axios = require('axios');
@@ -146,6 +145,27 @@ const mqttClient  = mqtt.connect(MQTT_BROKER_URL, {
 
 mqttClient.on('connect', function () {
     console.log('Connected to MQTT broker');
+});
+
+mqttClient.on('close', function () {
+    console.log('MQTT connection closed, attempting to reconnect...');
+    if (!mqttClient.reconnecting) {
+        mqttClient.reconnect();
+    }
+});
+
+mqttClient.on('offline', function () {
+    console.log('MQTT client is offline, attempting to reconnect...');
+    if (!mqttClient.reconnecting) {
+        mqttClient.reconnect();
+    }
+});
+
+mqttClient.on('error', function (err) {
+    console.error('MQTT error:', err);
+    if (!mqttClient.reconnecting) {
+        mqttClient.reconnect();
+    }
 });
 
 // On startup, fetch token and connect
