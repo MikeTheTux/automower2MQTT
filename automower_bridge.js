@@ -17,6 +17,10 @@ let husqvarnaConfig = {
     client_id: 'YOUR_CLIENT_ID',
     client_secret: 'YOUR_CLIENT_SECRET'
 };
+let logConfig = {
+    logTo: 'console',
+    logFilePath: path.join(__dirname, 'automower_bridge.log')
+};
 try {
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     if (config.mqtt) {
@@ -31,8 +35,38 @@ try {
             ...config.husqvarna
         };
     }
+    if (config.log) {
+        logConfig = {
+            ...logConfig,
+            ...config.log
+        };
+    }
 } catch (e) {
     console.warn('Could not load automower config file, using defaults:', e.message);
+}
+
+function log(...args) {
+    const message = args.map(arg => (typeof arg === 'object' ? JSON.stringify(arg) : String(arg))).join(' ');
+    const line = formatDateTime(new Date()) + ' ' + message + '\n';
+    if (logConfig.logTo === 'logfile') {
+        try {
+            fs.appendFileSync(logConfig.logFilePath, line);
+        } catch (err) {
+            console.error('Failed to write to log file:', err);
+            console.log(message);
+        }
+    } else {
+        console.log(message);
+    }
+}
+
+function formatDateTime(date) {
+    return date.getFullYear() + '-' +
+        String(date.getMonth() + 1).padStart(2, '0') + '-' +
+        String(date.getDate()).padStart(2, '0') + 'T' +
+        String(date.getHours()).padStart(2, '0') + ':' +
+        String(date.getMinutes()).padStart(2, '0') + ':' +
+        String(date.getSeconds()).padStart(2, '0');
 }
 
 // MQTT settings
@@ -50,6 +84,7 @@ const HUSQVARNA_CLIENT_SECRET = husqvarnaConfig.client_secret;
 
 let accessToken = null;
 let accessTokenExpiresAt = 0;
+let wsReconnectTimer = null;
 
 async function fetchAccessToken() {
     try {
@@ -65,10 +100,10 @@ async function fetchAccessToken() {
         accessToken = response.data.access_token;
         // expires_in is in seconds
         accessTokenExpiresAt = Date.now() + (response.data.expires_in - 60) * 1000; // renew 1 min before expiry
-        console.log('Fetched new Husqvarna access token');
+        log('Fetched new Husqvarna access token');
         return accessToken;
     } catch (err) {
-        console.error('Failed to fetch Husqvarna access token:', err.response ? err.response.data : err);
+        log('Failed to fetch Husqvarna access token:', err.response ? err.response.data : err);
         throw err;
     }
 }
@@ -89,7 +124,7 @@ async function connectWebSocketWithToken() {
     });
 
     ws.on('open', () => {
-        console.log('Connected to Husqvarna WebSocket');
+        log('Connected to Husqvarna WebSocket');
         mqttClient.publish(`${MQTT_TOPIC}/bridge/availability`, 'online', {retain: true});
         // Subscribe to all mower events
         ws.send(JSON.stringify({
@@ -103,31 +138,48 @@ async function connectWebSocketWithToken() {
     ws.on('message', (data) => {
         try {
             const event = data.toString().trim();
+            const heartbeat = formatDateTime(new Date());
             if (event !== "") {     // Ignore empty messages (e.g. ping)
+                log('Received from WebSocket:', event);
                 console.log('Received from WebSocket:', event);
                 const msg = JSON.parse(event);
                 const mowerId = msg.id;
                 const eventType = msg.type;
                 if ( mowerId && eventType) {
                     const topic = `${MQTT_TOPIC}/${mowerId}/${eventType}`;
+                    const heartbeatTopic = `${MQTT_TOPIC}/${mowerId}/heartbeat`;
                     const attributes = msg.attributes ? JSON.stringify(msg.attributes) : '{}';
                     mqttClient.publish(topic, attributes);
+                    mqttClient.publish(heartbeatTopic, heartbeat);
                 }
             }
+            const heartbeatTopic = `${MQTT_TOPIC}/bridge/heartbeat`;
+            mqttClient.publish(heartbeatTopic, heartbeat);
+            //log('Heartbeat sent to MQTT:', heartbeat);
         } catch (e) {
-            console.error('Failed to parse WebSocket message:', e);
+            log('Failed to parse WebSocket message:', e);
         }
     });
 
     ws.on('close', () => {
-        console.log('WebSocket connection closed');
+        log('WebSocket connection closed');
         mqttClient.publish(`${MQTT_TOPIC}/bridge/availability`, 'offline', {retain: true});
         connectWebSocketWithToken();
     });
 
     ws.on('error', (err) => {
-        console.error('WebSocket error:', err);
+        log('WebSocket error:', err);
     });
+
+    // WebSocket has a max time limit of 2 hours.
+    // To keep the connection a live you have to reconnect before 2 hours have passed.
+    // Set a timer to reconnect before 2 hours (e.g., after 1 hour 55 minutes)
+    if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = setTimeout(() => {
+        log('WebSocket reconnect timer triggered (max 2h limit), reconnecting...');
+        if (ws) ws.terminate();
+        connectWebSocketWithToken();
+    }, 115 * 60 * 1000); // 1 hour 55 minutes
 }
 
 // Connect to MQTT broker
@@ -144,25 +196,25 @@ const mqttClient  = mqtt.connect(MQTT_BROKER_URL, {
 });
 
 mqttClient.on('connect', function () {
-    console.log('Connected to MQTT broker');
+    log('Connected to MQTT broker');
 });
 
 mqttClient.on('close', function () {
-    console.log('MQTT connection closed, attempting to reconnect...');
+    log('MQTT connection closed, attempting to reconnect...');
     if (!mqttClient.reconnecting) {
         mqttClient.reconnect();
     }
 });
 
 mqttClient.on('offline', function () {
-    console.log('MQTT client is offline, attempting to reconnect...');
+    log('MQTT client is offline, attempting to reconnect...');
     if (!mqttClient.reconnecting) {
         mqttClient.reconnect();
     }
 });
 
 mqttClient.on('error', function (err) {
-    console.error('MQTT error:', err);
+    log('MQTT error:', err);
     if (!mqttClient.reconnecting) {
         mqttClient.reconnect();
     }
@@ -174,13 +226,13 @@ connectWebSocketWithToken();
 // Optionally, set up a timer to renew the token and reconnect WebSocket before expiry
 setInterval(async () => {
     if (Date.now() > accessTokenExpiresAt - 60000) { // 1 min before expiry
-        console.log('Renewing Husqvarna access token and reconnecting WebSocket...');
+        log('Renewing Husqvarna access token and reconnecting WebSocket...');
         try {
             await fetchAccessToken();
             if (ws) ws.terminate();
             connectWebSocketWithToken();
         } catch (e) {
-            console.error('Error renewing token or reconnecting WebSocket:', e);
+            log('Error renewing token or reconnecting WebSocket:', e);
         }
     }
 }, 60000);
