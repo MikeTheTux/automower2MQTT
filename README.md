@@ -25,6 +25,10 @@ Using WebSocket you can subscribe to events from your mower(s). Instead of polli
   "husqvarna": {
     "client_id": "YOUR_CLIENT_ID",
     "client_secret": "YOUR_SECRET"
+  },
+  "log": {
+    "logTo": "logfile",
+    "logFilePath": "~/automower_bridge.log"
   }
 }
 ```
