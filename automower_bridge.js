@@ -85,6 +85,8 @@ const HUSQVARNA_CLIENT_SECRET = husqvarnaConfig.client_secret;
 let accessToken = null;
 let accessTokenExpiresAt = 0;
 let wsReconnectTimer = null;
+let pingTimer = null;
+let ws = null;
 
 async function fetchAccessToken() {
     try {
@@ -99,7 +101,7 @@ async function fetchAccessToken() {
         });
         accessToken = response.data.access_token;
         // expires_in is in seconds
-        accessTokenExpiresAt = Date.now() + (response.data.expires_in - 60) * 1000; // renew 1 min before expiry
+        accessTokenExpiresAt = Date.now() + (response.data.expires_in * 1000) - (150 * 60 * 1000); // renew 150 min before expiry (token valid for entire 2 hours session)
         log('Fetched new Husqvarna access token');
         return accessToken;
     } catch (err) {
@@ -133,6 +135,11 @@ async function connectWebSocketWithToken() {
                 "categories": ["*"]
             }
         }));
+
+        // Ping server - to keep alive
+        if ( !pingTimer ) {
+            pingTimer = setInterval(function(){ ws.send('ping'); }, 60000);
+        }
     });
 
     ws.on('message', (data) => {
@@ -161,16 +168,51 @@ async function connectWebSocketWithToken() {
         }
     });
 
-    ws.on('close', () => {
-        log('WebSocket connection closed');
+    ws.on('close', async (code, reason) => {
+		// https://docs.w3cub.com/dom/websocket/close
+		// https://docs.w3cub.com/dom/closeevent/code
+		// ws.terminate():					    ws.readyState: 3; data: 1006 (Abnormal Closure)
+		// ws.close():						    ws.readyState: 3; data: 1005 (No Status Received)
+		// ws.close(1000, "Work complete"): 	ws.readyState: 3; data: 1000, reason: Work complete
+
+		// every 2 hour:			            ws.readyState: 3; data: 1001; reason: Going away -> connectWebSocketWithToken()
+		// every 1 day:				            ws.readyState: 3; data: 1006 (Abnormal Closure)  -> fetchAccessToken() and connectWebSocketWithToken()
+
+        log('WebSocket connection closed: code=' + code + ', reason=' + reason);
         mqttClient.publish(`${MQTT_TOPIC}/bridge/availability`, 'offline', {retain: true});
-        connectWebSocketWithToken();
+        if (pingTimer) {
+            clearInterval(pingTimer);
+            pingTimer = null;
+        }
+
+		if (code === 1000) {
+			// do not restart because of shut down of connection from the adapter
+		} else if (code === 1001) {
+			// every 2 hours
+            log('Reconnecting WebSocket...');
+			connectWebSocketWithToken();
+		} else if (code === 1006) {
+			// every 1 day
+			log('Renewing Husqvarna access token and reconnecting WebSocket...');
+            await fetchAccessToken();
+            if (ws) ws.terminate();
+            connectWebSocketWithToken();
+		} else if (code === 1012) {
+			// 1012 = Service Restart (The server is terminating the connection because it is restarting)
+			log('Renewing Husqvarna access token and reconnecting WebSocket...');
+            await fetchAccessToken();
+            if (ws) ws.terminate();
+            connectWebSocketWithToken();
+		} else {
+            log('Unexpected code: Reconnecting WebSocket...');
+			connectWebSocketWithToken();
+		}
     });
 
     ws.on('error', (err) => {
         log('WebSocket error:', err);
     });
-
+/*
     // WebSocket has a max time limit of 2 hours.
     // To keep the connection a live you have to reconnect before 2 hours have passed.
     // Set a timer to reconnect before 2 hours (e.g., after 1 hour 55 minutes)
@@ -180,6 +222,7 @@ async function connectWebSocketWithToken() {
         if (ws) ws.terminate();
         connectWebSocketWithToken();
     }, 115 * 60 * 1000); // 1 hour 55 minutes
+*/
 }
 
 // Connect to MQTT broker
@@ -224,6 +267,7 @@ mqttClient.on('error', function (err) {
 connectWebSocketWithToken();
 
 // Optionally, set up a timer to renew the token and reconnect WebSocket before expiry
+/*
 setInterval(async () => {
     if (Date.now() > accessTokenExpiresAt - 60000) { // 1 min before expiry
         log('Renewing Husqvarna access token and reconnecting WebSocket...');
@@ -236,3 +280,4 @@ setInterval(async () => {
         }
     }
 }, 60000);
+*/
